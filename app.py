@@ -16,13 +16,18 @@ from accelerate.utils import set_seed
 from omegaconf import OmegaConf
 from dotenv import load_dotenv
 from PIL import Image
+from time import time
+from datetime import datetime
+import io
+import zipfile
+import tempfile
 import gradio as gr
 import torchvision.transforms as transforms
 
 from HYPIR.enhancer.sd2 import SD2Enhancer
 from HYPIR.utils.captioner import GPTCaptioner
 
-# 设置环境变量，禁用所有检查
+# Configure environment variables for Gradio runtime behavior
 os.environ['GRADIO_DEBUG'] = '1'
 os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
 os.environ['NO_PROXY'] = 'localhost,127.0.0.1'
@@ -38,20 +43,20 @@ else:
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise AssertionError("Torch not compiled with CUDA enabled")
 
-# CPU性能优化设置
+# CPU tuning: align thread pools, enable MKL-DNN, and set runtime env hints
 if device == "cpu":
     from HYPIR.utils.device_setup import setup_cpu_device
     setup_cpu_device()
     try:
-        torch.set_num_threads(8)
-        print(f"  - PyTorch线程数: {torch.get_num_threads()}")
+        torch.set_num_threads(os.cpu_count())
+        print(f"  - PyTorch threads: {torch.get_num_threads()}")
     except RuntimeError as e:
-        print(f"  - 线程数设置跳过: {e}")
+        print(f"  - Thread config skipped: {e}")
     torch.backends.mkldnn.enabled = True
-    os.environ["OMP_NUM_THREADS"] = "8"
-    os.environ["MKL_NUM_THREADS"] = "8"
-    print("CPU优化设置已应用:")
-    print(f"  - MKL-DNN加速: {torch.backends.mkldnn.enabled}")
+    os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())
+    os.environ["MKL_NUM_THREADS"] = str(os.cpu_count())
+    print("CPU tuning applied:")
+    print(f"  - MKL-DNN enabled: {torch.backends.mkldnn.enabled}")
     print(f"  - OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS')}")
     print(f"  - MKL_NUM_THREADS: {os.environ.get('MKL_NUM_THREADS')}")
 
@@ -101,8 +106,10 @@ def process(
     prompt,
     upscale,
     seed,
+    history,
     progress=gr.Progress(track_tqdm=True),
 ):
+    t0 = time()
     if seed == -1:
         seed = random.randint(0, 2**32 - 1)
     set_seed(seed)
@@ -132,9 +139,49 @@ def process(
             return_type="pil",
         )[0]
     except Exception as e:
-        return error_image, f"Failed: {e} :("
+        history = history or []
+        gallery = [r["image"] for r in history]
+        table = [
+            [r["start"], r["end"], r["duration_s"], r["prompt"], r["upscale"], r["seed"], r["size"]]
+            for r in history
+        ]
+        return error_image, f"Failed: {e} :(", gallery, table, history
+    t1 = time()
+    start_ts = datetime.fromtimestamp(t0).strftime("%Y-%m-%d %H:%M:%S")
+    end_ts = datetime.fromtimestamp(t1).strftime("%Y-%m-%d %H:%M:%S")
+    duration = round(t1 - t0, 3)
+    record = {
+        "start": start_ts,
+        "end": end_ts,
+        "duration_s": duration,
+        "prompt": prompt,
+        "upscale": int(upscale),
+        "seed": int(seed),
+        "size": f"{pil_image.size[0]}x{pil_image.size[1]}",
+        "image": pil_image,
+    }
+    history = history or []
+    history.append(record)
+    gallery = [r["image"] for r in history]
+    table = [
+        [r["start"], r["end"], r["duration_s"], r["prompt"], r["upscale"], r["seed"], r["size"]]
+        for r in history
+    ]
+    return pil_image, f"Success! :)\nUsed prompt: {prompt}", gallery, table, history
 
-    return pil_image, f"Success! :)\nUsed prompt: {prompt}"
+def export_zip(history):
+    history = history or []
+    if not history:
+        return None
+    tmpdir = tempfile.mkdtemp(prefix="hypir_hist_")
+    zippath = os.path.join(tmpdir, "history.zip")
+    with zipfile.ZipFile(zippath, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for i, r in enumerate(history):
+            fname = f"{i+1}_{r['start'].replace(' ', '_').replace(':','-')}_x{r['upscale']}.png"
+            buf = io.BytesIO()
+            r["image"].save(buf, format="PNG")
+            zf.writestr(fname, buf.getvalue())
+    return zippath
 
 
 MARKDOWN = """
@@ -161,14 +208,33 @@ with block:
             run = gr.Button(value="Run")
         with gr.Column():
             result = gr.Image(type="pil", format="png")
-            status = gr.Textbox(label="status", interactive=False)
-        run.click(
-            fn=process,
-            inputs=[image, prompt, upscale, seed],
-            outputs=[result, status],
-        )
+            status = gr.Textbox(label="Status", interactive=False)
+    with gr.Row():
+        with gr.Column():
+            history_state = gr.State([])
+            with gr.Row():
+                save_btn = gr.Button(value="Export History ZIP")
+                zip_file = gr.File(label="History ZIP")
+            with gr.Tabs():
+                with gr.Tab("History Images"):
+                    history_gallery = gr.Gallery(label="History Images", columns=6, height=240)
+                with gr.Tab("History Details"):
+                    history_table = gr.DataFrame(
+                        headers=["Start", "End", "Duration(s)", "Prompt", "Upscale", "Seed", "Size"],
+                        interactive=False,
+                    )
+    run.click(
+        fn=process,
+        inputs=[image, prompt, upscale, seed, history_state],
+        outputs=[result, status, history_gallery, history_table, history_state],
+    )
+    save_btn.click(
+        fn=export_zip,
+        inputs=[history_state],
+        outputs=[zip_file],
+    )
 
-# 使用更宽松的启动参数
+# Launch with more permissive settings for local runtime stability
 try:
     block.queue().launch(
         server_name="0.0.0.0",
