@@ -29,13 +29,13 @@ class BaseEnhancer:
         self.model_t = model_t
         self.coeff_t = coeff_t
 
-        # 处理设备参数（可能是字符串或torch.device对象）
+        # Normalize device argument
         if isinstance(device, str):
             device = torch.device(device)
         
-        # 根据设备类型选择合适的数据类型
+        # Select dtype based on device
         if device.type == "cpu":
-            self.weight_dtype = torch.float32  # CPU模式使用float32获得更好性能
+            self.weight_dtype = torch.float32
         else:
             self.weight_dtype = torch.bfloat16
         self.device = device
@@ -56,7 +56,7 @@ class BaseEnhancer:
 
     def init_vae(self):
         self.vae = AutoencoderKL.from_pretrained(
-            self.base_model_path, subfolder="vae", torch_dtype=self.weight_dtype).to(self.device)
+            self.base_model_path, subfolder="vae", torch_dtype=self.weight_dtype).to(self.device, memory_format=torch.channels_last)
         self.vae.eval().requires_grad_(False)
 
     @overload
@@ -79,7 +79,7 @@ class BaseEnhancer:
         upscale: int = 1,
         return_type: Literal["pt", "np", "pil"] = "pt",
     ) -> torch.Tensor | np.ndarray | List[Image.Image]:
-        patch_size = 1024  # 从512增大到1024，减少tile数量提高性能
+        patch_size = 1536 if self.device.type == "cpu" else 1024
 
         # Prepare low-quality inputs
         bs = len(lq)
@@ -90,7 +90,7 @@ class BaseEnhancer:
             lq = self.resize_at_least(lq, size=patch_size)
 
         # VAE encoding
-        lq = (lq * 2 - 1).to(dtype=self.weight_dtype, device=self.device)
+        lq = (lq * 2 - 1).to(dtype=self.weight_dtype, device=self.device).contiguous(memory_format=torch.channels_last)
         h1, w1 = lq.shape[2:]
         # Pad vae input size to multiples of vae_scale_factor,
         # otherwise image size will be changed
@@ -114,6 +114,7 @@ class BaseEnhancer:
             stride=patch_size // 2 // vae_scale_factor,
             progress=True,
             desc="Generator Forward",
+            num_workers=1 if self.device.type == "cpu" else 4,
         )(z_lq)
         with enable_tiled_vae(
             self.vae,
@@ -121,7 +122,7 @@ class BaseEnhancer:
             tile_size=patch_size // vae_scale_factor,
             dtype=self.weight_dtype,
         ):
-            x = self.vae.decode(z.to(self.weight_dtype)).sample.float()
+            x = self.vae.decode(z.to(self.weight_dtype)).sample.float().contiguous(memory_format=torch.channels_last)
         x = x[..., :h1, :w1]
         x = (x + 1) / 2
         x = F.interpolate(input=x, size=(h0, w0), mode="bicubic", antialias=True)

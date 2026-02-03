@@ -1,4 +1,6 @@
 import torch
+import torch._dynamo
+import shutil
 from diffusers import DDPMScheduler, UNet2DConditionModel
 from transformers import CLIPTextModel, CLIPTokenizer
 from peft import LoraConfig
@@ -19,7 +21,7 @@ class SD2Enhancer(BaseEnhancer):
 
     def init_generator(self):
         self.G: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
-            self.base_model_path, subfolder="unet", torch_dtype=self.weight_dtype).to(self.device)
+            self.base_model_path, subfolder="unet", torch_dtype=self.weight_dtype).to(self.device, memory_format=torch.channels_last)
         target_modules = self.lora_modules
         G_lora_cfg = LoraConfig(r=self.lora_rank, lora_alpha=self.lora_rank,
             init_lora_weights="gaussian", target_modules=target_modules)
@@ -35,6 +37,13 @@ class SD2Enhancer(BaseEnhancer):
         assert required_keys == input_keys, f"Missing: {missing}, Unexpected: {unexpected}"
 
         self.G.eval().requires_grad_(False)
+        if hasattr(torch, "compile") and self.device.type == "cpu":
+            torch._dynamo.config.suppress_errors = True
+            if shutil.which("cl"):
+                try:
+                    self.G = torch.compile(self.G, backend="inductor", mode="reduce-overhead")
+                except Exception:
+                    pass
 
     def prepare_inputs(self, batch_size, prompt):
         bs = batch_size
