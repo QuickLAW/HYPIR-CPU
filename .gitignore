@@ -10,4 +10,5 @@ __pycache__
 /cog_im_files
 /.cog
 /output.png
-/results
+
+*.pth
