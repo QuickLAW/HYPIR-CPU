@@ -4,6 +4,8 @@ import importlib
 import os
 from urllib.parse import urlparse
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import torch
 from torch import Tensor
@@ -167,9 +169,25 @@ def make_tiled_fn(
     device: torch.device | None = None,
     progress: bool = True,
     desc: str=None,
+    num_workers: int = 4,  # 新增参数：工作线程数
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     # Only split the first input of function.
     def tiled_fn(x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        # 多线程处理单个tile的函数
+        def process_single_tile(tile_info):
+            hi, hi_end, wi, wi_end = tile_info
+            x_tile = x[..., hi:hi_end, wi:wi_end]
+            out_hi, out_hi_end, out_wi, out_wi_end = map(
+                scale_fn, (hi, hi_end, wi, wi_end)
+            )
+            
+            # 复制kwargs避免多线程冲突
+            tile_kwargs = kwargs.copy()
+            if len(args) or len(kwargs):
+                tile_kwargs.update(index=TileIndex(hi=hi, hi_end=hi_end, wi=wi, wi_end=wi_end))
+            
+            result = fn(x_tile, *args, **tile_kwargs) * weights
+            return result, out_hi, out_hi_end, out_wi, out_wi_end
         if scale_type == "up":
             scale_fn = lambda n: int(n * scale)
         else:
@@ -179,40 +197,75 @@ def make_tiled_fn(
         out_dtype = dtype or x.dtype
         out_device = device or x.device
         out_channel = channel or c
-        out = torch.zeros(
+        # 预分配内存缓冲区，使用连续内存布局提高性能
+        out = torch.empty(
             (b, out_channel, scale_fn(h), scale_fn(w)),
             dtype=out_dtype,
             device=out_device,
-        )
-        count = torch.zeros_like(out, dtype=torch.float32)
+            memory_format=torch.contiguous_format,  # 使用连续内存格式
+        ).zero_()  # 使用zero_()避免重新分配
+        
+        count = torch.empty_like(out, dtype=torch.float32, memory_format=torch.contiguous_format).zero_()
+        # 权重缓存优化，避免重复创建相同的权重
         weight_size = scale_fn(size)
-        weights = (
-            gaussian_weights(weight_size, weight_size)[None, None]
-            if weight == "gaussian"
-            else np.ones((1, 1, weight_size, weight_size))
-        )
-        weights = torch.tensor(
-            weights,
-            dtype=out_dtype,
-            device=out_device,
-        )
+        if weight == "gaussian":
+            # 使用缓存的权重或创建新的
+            cache_key = f"gaussian_{weight_size}_{str(out_device)}"
+            if not hasattr(make_tiled_fn, '_weight_cache'):
+                make_tiled_fn._weight_cache = {}
+            
+            if cache_key not in make_tiled_fn._weight_cache:
+                make_tiled_fn._weight_cache[cache_key] = torch.tensor(
+                    gaussian_weights(weight_size, weight_size)[None, None],
+                    dtype=out_dtype,
+                    device=out_device,
+                )
+            weights = make_tiled_fn._weight_cache[cache_key]
+        else:
+            # 均匀权重更简单，直接创建
+            weights = torch.ones(
+                (1, 1, weight_size, weight_size),
+                dtype=out_dtype,
+                device=out_device,
+            )
 
         indices = sliding_windows(h, w, size, stride)
-        pbar_desc = f"[{desc}]: Tiled Processing" if desc else "Tiled Processing"
-        pbar = tqdm(
-            indices, desc=pbar_desc, disable=not progress
-        )
-        for hi, hi_end, wi, wi_end in pbar:
-            x_tile = x[..., hi:hi_end, wi:wi_end]
-            out_hi, out_hi_end, out_wi, out_wi_end = map(
-                scale_fn, (hi, hi_end, wi, wi_end)
+        
+        # 根据设备类型和tile数量选择处理策略
+        use_multithread = len(indices) > 4 and (device is None or str(device) == "cpu")
+        
+        if use_multithread and num_workers > 1:
+            # 多线程处理模式
+            pbar_desc = f"[{desc}]: Multi-threaded Tiled Processing" if desc else "Multi-threaded Tiled Processing"
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                # 提交所有tile处理任务
+                futures = [executor.submit(process_single_tile, tile_info) for tile_info in indices]
+                
+                # 使用tqdm显示进度
+                pbar = tqdm(as_completed(futures), total=len(futures), desc=pbar_desc, disable=not progress, leave=False)
+                
+                for future in pbar:
+                    result, out_hi, out_hi_end, out_wi, out_wi_end = future.result()
+                    out[..., out_hi:out_hi_end, out_wi:out_wi_end] += result
+                    count[..., out_hi:out_hi_end, out_wi:out_wi_end] += weights
+        else:
+            # 原始单线程处理模式
+            pbar_desc = f"[{desc}]: Tiled Processing" if desc else "Tiled Processing"
+            pbar = tqdm(
+                indices, desc=pbar_desc, disable=not progress, leave=False
             )
-            if len(args) or len(kwargs):
-                kwargs.update(index=TileIndex(hi=hi, hi_end=hi_end, wi=wi, wi_end=wi_end))
-            out[..., out_hi:out_hi_end, out_wi:out_wi_end] += (
-                fn(x_tile, *args, **kwargs) * weights
-            )
-            count[..., out_hi:out_hi_end, out_wi:out_wi_end] += weights
+            for hi, hi_end, wi, wi_end in pbar:
+                x_tile = x[..., hi:hi_end, wi:wi_end]
+                out_hi, out_hi_end, out_wi, out_wi_end = map(
+                    scale_fn, (hi, hi_end, wi, wi_end)
+                )
+                if len(args) or len(kwargs):
+                    kwargs.update(index=TileIndex(hi=hi, hi_end=hi_end, wi=wi, wi_end=wi_end))
+                out[..., out_hi:out_hi_end, out_wi:out_wi_end] += (
+                    fn(x_tile, *args, **kwargs) * weights
+                )
+                count[..., out_hi:out_hi_end, out_wi:out_wi_end] += weights
+        
         out = out / count
         return out
 

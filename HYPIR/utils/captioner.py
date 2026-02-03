@@ -24,16 +24,6 @@ class EmptyCaptioner(Captioner):
         return ""
 
 
-class FixedCaptioner(Captioner):
-
-    def __init__(self, device: torch.device, caption: str) -> "FixedCaptioner":
-        super().__init__(device)
-        self.caption = caption
-
-    def __call__(self, image: Image.Image) -> str:
-        return self.caption
-
-
 class GPTCaptioner(Captioner):
 
     DEFAULT_PROMPT = "Provide a detailed description of this image without exceeding 100 words and without line breaks."
