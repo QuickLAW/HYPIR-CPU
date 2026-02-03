@@ -1,14 +1,23 @@
-import random
 import os
 from argparse import ArgumentParser
 
-import gradio as gr
-import torchvision.transforms as transforms
+parser = ArgumentParser()
+parser.add_argument("--config", type=str, default="configs/sd2_gradio.yaml")
+parser.add_argument("--local", action="store_true")
+parser.add_argument("--port", type=int, default=7860)
+parser.add_argument("--gpt_caption", action="store_true")
+parser.add_argument("--max_size", type=str, default=None, help="Comma-seperated image size")
+parser.add_argument("--device", type=str)
+args = parser.parse_args()
+
+import random
+import torch
 from accelerate.utils import set_seed
 from omegaconf import OmegaConf
 from dotenv import load_dotenv
 from PIL import Image
-import torch
+import gradio as gr
+import torchvision.transforms as transforms
 
 from HYPIR.enhancer.sd2 import SD2Enhancer
 from HYPIR.utils.captioner import GPTCaptioner
@@ -22,37 +31,25 @@ os.environ['no_proxy'] = 'localhost,127.0.0.1'
 load_dotenv()
 error_image = Image.open(os.path.join("assets", "gradio_error_img.png"))
 
-parser = ArgumentParser()
-parser.add_argument("--config", type=str, required=True)
-parser.add_argument("--local", action="store_true")
-parser.add_argument("--port", type=int, default=7860)
-parser.add_argument("--gpt_caption", action="store_true")
-parser.add_argument("--max_size", type=str, default=None, help="Comma-seperated image size")
-parser.add_argument("--device", type=str, default="cuda")
-args = parser.parse_args()
+if args.device is None:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+else:
+    device = args.device
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        raise AssertionError("Torch not compiled with CUDA enabled")
 
 # CPU性能优化设置
-if args.device == "cpu":
-    # 应用CPU设备配置补丁
+if device == "cpu":
     from HYPIR.utils.device_setup import setup_cpu_device
     setup_cpu_device()
-    
-    # 原有的CPU性能优化设置（作为备用）
-    print("检测到CPU设备，应用CPU性能优化...")
-    
-    # 只设置线程数，不设置交互线程数（避免运行时错误）
     try:
         torch.set_num_threads(8)
         print(f"  - PyTorch线程数: {torch.get_num_threads()}")
     except RuntimeError as e:
         print(f"  - 线程数设置跳过: {e}")
-    
     torch.backends.mkldnn.enabled = True
-    
-    # 设置环境变量
     os.environ["OMP_NUM_THREADS"] = "8"
     os.environ["MKL_NUM_THREADS"] = "8"
-    
     print("CPU优化设置已应用:")
     print(f"  - MKL-DNN加速: {torch.backends.mkldnn.enabled}")
     print(f"  - OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS')}")
@@ -92,7 +89,7 @@ if config.base_model_type == "sd2":
         lora_rank=config.lora_rank,
         model_t=config.model_t,
         coeff_t=config.coeff_t,
-        device=args.device,
+        device=device,
     )
     model.init_models()
 else:
