@@ -8,23 +8,11 @@
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=XPixelGroup/HYPIR) [![Try a demo on Replicate](https://replicate.com/0x3f3f3f3fun/hypir-sd2/badge)](https://replicate.com/0x3f3f3f3fun/hypir-sd2) [![Open in OpenXLab](https://cdn-static.openxlab.org.cn/app-center/openxlab_app.svg)](https://openxlab.org.cn/apps/detail/linxinqi/HYPIR-SD2) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1MbpICKc22S6ysD32uj3ORkqg6AgZrNpx?usp=sharing)
 
-[Xinqi Lin](https://0x3f3f3f3fun.github.io/)<sup>1,2</sup>, [Fanghua Yu](https://github.com/Fanghua-Yu)<sup>1</sup>, [Jinfan Hu](https://j-fhu.github.io/)<sup>1,2</sup>, [Zhiyuan You](https://zhiyuanyou.github.io/)<sup>1,3</sup>, [Wu Shi](https://scholar.google.com/citations?user=pTH7MA4AAAAJ)<sup>1</sup>, [Jimmy S. Ren](https://www.jimmyren.com/)<sup>4,5</sup>, [Jinjin Gu](https://www.jasongt.com/)<sup>6,\*</sup>, [Chao Dong](https://scholar.google.com.hk/citations?user=OSDCB0UAAAAJ)<sup>1,7,\*</sup>
+Xinqi Lin<sup>1,2</sup>, [Fanghua Yu](https://github.com/Fanghua-Yu)<sup>1</sup>, Jinfan Hu<sup>1,2</sup>, [Zhiyuan You](https://zhiyuanyou.github.io/)<sup>1,3</sup>, Wu Shi<sup>1</sup>, [Jimmy S. Ren](https://www.jimmyren.com/)<sup>4,5</sup>, [Jinjin Gu](https://www.jasongt.com/)<sup>6,\*</sup>, [Chao Dong](https://scholar.google.com.hk/citations?user=OSDCB0UAAAAJ)<sup>1,7,\*</sup>
 
 \*: Corresponding author
 
 <sup>1</sup>Shenzhen Institutes of Advanced Technology, Chinese Academy of Sciences<br><sup>2</sup>University of Chinese Academy of Sciences<br><sup>3</sup>The Chinese University of Hong Kong<br><sup>4</sup>SenseTime Research<br><sup>5</sup>Hong Kong Metropolitan University<br><sup>6</sup>INSAIT, Sofia University<br><sup>7</sup>Shenzhen University of Advanced Technology
-
-<table >
-  <tbody>
-    <tr align="center">
-      <td><img src="assets/inst_logos/siat.png"/ style="height:40px;"></td>
-      <td><img src="assets/inst_logos/cuhk.png" style="height:40px;"/></td>
-      <td><img src="assets/inst_logos/hkmu.png" style="height:40px;"/></td>
-      <td><img src="assets/inst_logos/insait.png" style="height:40px;"/></td>
-      <td><img src="assets/inst_logos/suat.png" style="height:40px;"/></td>
-    </tr>
-  </tbody>
-</table>
 
 <p align="center">
     <img src="assets/teaser.png">
@@ -32,50 +20,25 @@
 
 :star:If HYPIR is helpful for you, please help star this repo. Thanks!:hugs:
 
-## :book:Contents
+## :book:Table Of Contents
 
 - [What's Next](#next)
-- [Gallery](#gallery)
 - [Update](#update)
 - [Installation](#installation)
 - [Pretrained Models](#pretrained_models)
 - [Quick Start](#quick_start)
-- [Inference](#inference)
 - [Train](#train)
 
 ## <a name="next"></a>:soon:What's Next
 
-**Our current open-source version** is based on the Stable Diffusion 2.1. While the number of parameters is small, this model was trained on our best-quality data and with significant computational resources (batch size 1024). Therefore, its performance is also quite good. Some examples [here](#gallery).
+**Our current open-source version** is based on the Stable Diffusion 2.1. While the number of parameters is small, this model was trained on our best-quality data and with significant computational resources (batch size 1024). Therefore, its performance is also quite good.
 
-**Our most advanced model** has been launched on [suppixel.ai](https://supir.suppixel.ai/home) and [suppixel.cn](https://www.suppixel.cn/home)!🔥🔥🔥 We welcome you to experience it. This state-of-the-art model offers **more stable results**, **more flexible capabilities**, while still maintaining **incredibly fast speeds**.
+~~We'll provide access to more advanced models based on **FLUX** and **Stable Diffusion 3.5** through web interfaces and APIs in the future. Stay tuned!✨~~
 
-⚠️⚠️⚠️The following website is not under our operation. They do not have a license for our model and have used several of our comparison images without our permission. Please verify the legitimacy of any site to prevent financial loss.
+**Our most advanced model** has been launched on [suppixel.ai](https://supir.suppixel.ai/home) and [suppixel.cn](https://www.suppixel.cn/home)! We welcome you to experience it.🔥🔥🔥 This state-of-the-art model offers **more stable results**, **more flexible capabilities**, while still maintaining **incredibly fast speeds**🔥🔥🔥.
+
+Also, be aware that **pirated HYPIR websites**⚠️⚠️⚠️ are now active. Please verify the legitimacy of any site to prevent financial loss. The following website is illegally using our project:
 - https://www.hypir.org/
-
-## <a name="gallery"></a>:eyes:Gallery
-
-The following cases were upscaled by HYPIR-SD2. All resolutions are above 2k.
-
-<table >
-  <tbody>
-    <tr align="center">
-      <td><a href="https://imgsli.com/NDAzMjA5"><img src="assets/gallery_sd2/Avatar.jpg"/></a></td>
-      <td><a href="https://imgsli.com/NDAzMjEx"><img src="assets/gallery_sd2/The_Matrix.jpg" width="90%"/></a></td>
-    </tr>
-    <tr align="center">
-      <td><a href="https://imgsli.com/NDAzMjE0"><img src="assets/gallery_sd2/The_Lord_of_the Rings.jpg" width="100%"/></a><br><a href="https://imgsli.com/NDAzMjI1"><img src="assets/gallery_sd2/Coco.jpg" width="100%"/></a></td>
-      <td><a href="https://imgsli.com/NDAzMjE4"><img src="assets/gallery_sd2/Forrest_Gump.jpg" width="72%"/></a></td>
-    </tr>
-    <tr align="center">
-      <td><a href="https://imgsli.com/NDAzMjIz"><img src="assets/gallery_sd2/Dragon_Ball.jpg"/></a></td>
-      <td><a href="https://imgsli.com/NDAzMjI3"><img src="assets/gallery_sd2/Uproar_in_Heaven.jpg"/></a></td>
-    </tr>
-    <tr align="center">
-      <td><a href="https://imgsli.com/NDAzMjI0"><img src="assets/gallery_sd2/Spirited_Away.jpg"/></a></td>
-      <td><a href="https://imgsli.com/NDAzMjI5"><img src="assets/gallery_sd2/Calabash_Brothers.jpg"/></a></td>
-    </tr>
-  </tbody>
-</table>
 
 ## <a name="update"></a>:new:Update
 
@@ -128,35 +91,6 @@ pip install -r requirements.txt
 <div align="center">
     <kbd><img src="assets/gradio.png"></img></kbd>
 </div>
-
-## <a name="inference"></a>:crossed_swords:Inference
-
-More details can be found by running `python test.py --help`.
-
-```shell
-LORA_MODULES_LIST=(to_k to_q to_v to_out.0 conv conv1 conv2 conv_shortcut conv_out proj_in proj_out ff.net.2 ff.net.0.proj)
-IFS=','
-LORA_MODULES="${LORA_MODULES_LIST[*]}"
-unset IFS
-
-python test.py \
---base_model_type sd2 \
---base_model_path stabilityai/stable-diffusion-2-1-base \
---model_t 200 \
---coeff_t 200 \
---lora_rank 256 \
---lora_modules $LORA_MODULES \
---weight_path path/to/HYPIR_sd2.pth \
---patch_size 512 \
---stride 256 \
---lq_dir examples/lq \
---scale_by factor \
---upscale 4 \
---txt_dir examples/prompt \
---output_dir results/examples \
---seed 231 \
---device cuda
-```
 
 ## <a name="train"></a>:stars:Train
 
