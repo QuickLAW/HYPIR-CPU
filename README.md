@@ -72,8 +72,18 @@ pip install -r requirements.txt
 3. Run the following command to launch gradio.
 
     ```shell
-    python app.py --config configs/sd2_gradio.yaml --local --device cuda
+    # Recommended: auto device (CUDA→CPU) and default config
+    python app.py --local
+
+    # Explicit device (CPU)
+    python app.py --config configs/sd2_gradio.yaml --device cpu --local
+
+    # Explicit device (CUDA, requires CUDA-enabled PyTorch)
+    python app.py --config configs/sd2_gradio.yaml --device cuda --local
     ```
+
+    - Default config path: `configs/sd2_gradio.yaml`
+    - Device selection: If `--device` is omitted, the program tries CUDA first and falls back to CPU. If `--device` is provided and unavailable (e.g., `cuda` without CUDA-enabled PyTorch), the program fails fast with an error.
 4. (Optional) Tired of manually typing out prompts for your images? Let GPT do the work for you!
 
     First, create a file named `.env` in the project directory.
