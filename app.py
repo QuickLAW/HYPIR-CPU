@@ -8,10 +8,16 @@ from accelerate.utils import set_seed
 from omegaconf import OmegaConf
 from dotenv import load_dotenv
 from PIL import Image
+import torch
 
 from HYPIR.enhancer.sd2 import SD2Enhancer
 from HYPIR.utils.captioner import GPTCaptioner
 
+# 设置环境变量，禁用所有检查
+os.environ['GRADIO_DEBUG'] = '1'
+os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
+os.environ['NO_PROXY'] = 'localhost,127.0.0.1'
+os.environ['no_proxy'] = 'localhost,127.0.0.1'
 
 load_dotenv()
 error_image = Image.open(os.path.join("assets", "gradio_error_img.png"))
@@ -24,6 +30,33 @@ parser.add_argument("--gpt_caption", action="store_true")
 parser.add_argument("--max_size", type=str, default=None, help="Comma-seperated image size")
 parser.add_argument("--device", type=str, default="cuda")
 args = parser.parse_args()
+
+# CPU性能优化设置
+if args.device == "cpu":
+    # 应用CPU设备配置补丁
+    from HYPIR.utils.device_setup import setup_cpu_device
+    setup_cpu_device()
+    
+    # 原有的CPU性能优化设置（作为备用）
+    print("检测到CPU设备，应用CPU性能优化...")
+    
+    # 只设置线程数，不设置交互线程数（避免运行时错误）
+    try:
+        torch.set_num_threads(8)
+        print(f"  - PyTorch线程数: {torch.get_num_threads()}")
+    except RuntimeError as e:
+        print(f"  - 线程数设置跳过: {e}")
+    
+    torch.backends.mkldnn.enabled = True
+    
+    # 设置环境变量
+    os.environ["OMP_NUM_THREADS"] = "8"
+    os.environ["MKL_NUM_THREADS"] = "8"
+    
+    print("CPU优化设置已应用:")
+    print(f"  - MKL-DNN加速: {torch.backends.mkldnn.enabled}")
+    print(f"  - OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS')}")
+    print(f"  - MKL_NUM_THREADS: {os.environ.get('MKL_NUM_THREADS')}")
 
 max_size = args.max_size
 if max_size is not None:
@@ -70,8 +103,6 @@ def process(
     image,
     prompt,
     upscale,
-    patch_size,
-    stride,
     seed,
     progress=gr.Progress(track_tqdm=True),
 ):
@@ -101,8 +132,6 @@ def process(
             lq=image_tensor,
             prompt=prompt,
             upscale=upscale,
-            patch_size=patch_size,
-            stride=stride,
             return_type="pil",
         )[0]
     except Exception as e:
@@ -119,7 +148,7 @@ MARKDOWN = """
 If HYPIR is helpful for you, please help star the GitHub Repo. Thanks!
 """
 
-block = gr.Blocks().queue()
+block = gr.Blocks()
 with block:
     with gr.Row():
         gr.Markdown(MARKDOWN)
@@ -131,8 +160,6 @@ with block:
                 if args.gpt_caption else "Prompt"
             ))
             upscale = gr.Slider(minimum=1, maximum=8, value=1, label="Upscale Factor", step=1)
-            patch_size = gr.Slider(minimum=512, maximum=1024, value=512, label="Patch Size", step=128)
-            stride = gr.Slider(minimum=256, maximum=1024, value=256, label="Patch Stride", step=128)
             seed = gr.Number(label="Seed", value=-1)
             run = gr.Button(value="Run")
         with gr.Column():
@@ -140,7 +167,31 @@ with block:
             status = gr.Textbox(label="status", interactive=False)
         run.click(
             fn=process,
-            inputs=[image, prompt, upscale, patch_size, stride, seed],
+            inputs=[image, prompt, upscale, seed],
             outputs=[result, status],
         )
-block.launch(server_name="0.0.0.0" if not args.local else "127.0.0.1", server_port=args.port)
+
+# 使用更宽松的启动参数
+try:
+    block.queue().launch(
+        server_name="0.0.0.0",
+        server_port=args.port,
+        share=False,
+        inbrowser=False,
+        prevent_thread_lock=False,
+        quiet=False,
+        show_error=True,
+        ssl_verify=False
+    )
+except Exception as e:
+    print(f"Launch with queue failed: {e}")
+    print("Trying to launch without queue...")
+    block.launch(
+        server_name="0.0.0.0",
+        server_port=args.port,
+        share=False,
+        inbrowser=False,
+        prevent_thread_lock=False,
+        quiet=False,
+        show_error=True
+    )
