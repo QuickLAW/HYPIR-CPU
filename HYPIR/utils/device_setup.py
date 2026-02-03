@@ -1,37 +1,52 @@
 """
-设备配置补丁 - 在应用启动时调用此函数来正确配置CPU模式
+Device configuration helpers.
+
+This module standardizes CPU runtime tuning for PyTorch workloads.
+It aligns thread pools, enables MKL-DNN, and sets environment hints
+to reduce contention and improve deterministic performance on multi-core CPUs.
 """
 
 def setup_cpu_device():
-    """设置CPU设备配置"""
+    """Apply CPU-specific runtime configuration.
+
+    - Force device override to CPU for tiled VAE utilities
+    - Set PyTorch intra-op threads to logical CPU count; keep inter-op low
+    - Enable MKL-DNN backend for optimized ops
+    - Configure OMP/MKL/KMP env vars to reduce thread oversubscription
+    """
     import torch
     from HYPIR.utils.tiled_vae import devices
+    import os
+    n = os.cpu_count()
     
-    # 设置设备覆盖
+    # Set device override for downstream modules
     devices.set_device_override("cpu")
     
-    # 应用CPU优化设置
-    torch.set_num_threads(8)
-    torch.set_num_interop_threads(8)
+    # PyTorch threading and MKL-DNN
+    torch.set_num_threads(n)
+    torch.set_num_interop_threads(1)
     torch.backends.mkldnn.enabled = True
     
-    import os
-    os.environ["OMP_NUM_THREADS"] = "8"
-    os.environ["MKL_NUM_THREADS"] = "8"
+    os.environ["OMP_NUM_THREADS"] = str(n)
+    os.environ["MKL_NUM_THREADS"] = str(n)
+    # Runtime hints for OpenMP/Intel runtime to avoid context switching
+    os.environ.setdefault("KMP_AFFINITY", "granularity=fine,compact,1,0")
+    os.environ.setdefault("KMP_BLOCKTIME", "0")
+    os.environ.setdefault("OMP_PROC_BIND", "true")
     
-    print("CPU设备配置已应用:")
-    print(f"  - 设备: {devices.device}")
-    print(f"  - 数据类型: {devices.dtype}")
-    print(f"  - PyTorch线程数: {torch.get_num_threads()}")
+    print("CPU device configuration applied:")
+    print(f"  - Device: {devices.device}")
+    print(f"  - DType: {devices.dtype}")
+    print(f"  - PyTorch threads: {torch.get_num_threads()}")
     print(f"  - MKL-DNN: {torch.backends.mkldnn.enabled}")
 
 def setup_device(device_name):
-    """根据设备名称设置配置"""
+    """Apply device-specific configuration by name."""
     if device_name == "cpu":
         setup_cpu_device()
     else:
-        # GPU模式的配置保持不变
+        # GPU configuration remains default; only set override if available
         from HYPIR.utils.tiled_vae import devices
         if hasattr(devices, 'set_device_override'):
             devices.set_device_override(device_name)
-        print(f"GPU设备配置已应用: {device_name}")
+        print(f"GPU device configuration applied: {device_name}")

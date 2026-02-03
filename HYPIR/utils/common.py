@@ -169,11 +169,11 @@ def make_tiled_fn(
     device: torch.device | None = None,
     progress: bool = True,
     desc: str=None,
-    num_workers: int = 4,  # 新增参数：工作线程数
+    num_workers: int = 4,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     # Only split the first input of function.
     def tiled_fn(x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        # 多线程处理单个tile的函数
+        # Single-tile processing function for multi-threaded mode
         def process_single_tile(tile_info):
             hi, hi_end, wi, wi_end = tile_info
             x_tile = x[..., hi:hi_end, wi:wi_end]
@@ -181,7 +181,7 @@ def make_tiled_fn(
                 scale_fn, (hi, hi_end, wi, wi_end)
             )
             
-            # 复制kwargs避免多线程冲突
+            # Copy kwargs to avoid cross-thread mutation
             tile_kwargs = kwargs.copy()
             if len(args) or len(kwargs):
                 tile_kwargs.update(index=TileIndex(hi=hi, hi_end=hi_end, wi=wi, wi_end=wi_end))
@@ -197,19 +197,19 @@ def make_tiled_fn(
         out_dtype = dtype or x.dtype
         out_device = device or x.device
         out_channel = channel or c
-        # 预分配内存缓冲区，使用连续内存布局提高性能
+        # Pre-allocate contiguous buffers to improve cache locality
         out = torch.empty(
             (b, out_channel, scale_fn(h), scale_fn(w)),
             dtype=out_dtype,
             device=out_device,
-            memory_format=torch.contiguous_format,  # 使用连续内存格式
-        ).zero_()  # 使用zero_()避免重新分配
+            memory_format=torch.contiguous_format,
+        ).zero_()
         
         count = torch.empty_like(out, dtype=torch.float32, memory_format=torch.contiguous_format).zero_()
-        # 权重缓存优化，避免重复创建相同的权重
+        # Cache weights to avoid repeated allocations
         weight_size = scale_fn(size)
         if weight == "gaussian":
-            # 使用缓存的权重或创建新的
+            # Reuse cached weights when available
             cache_key = f"gaussian_{weight_size}_{str(out_device)}"
             if not hasattr(make_tiled_fn, '_weight_cache'):
                 make_tiled_fn._weight_cache = {}
@@ -222,7 +222,7 @@ def make_tiled_fn(
                 )
             weights = make_tiled_fn._weight_cache[cache_key]
         else:
-            # 均匀权重更简单，直接创建
+            # Uniform weights
             weights = torch.ones(
                 (1, 1, weight_size, weight_size),
                 dtype=out_dtype,
@@ -231,17 +231,17 @@ def make_tiled_fn(
 
         indices = sliding_windows(h, w, size, stride)
         
-        # 根据设备类型和tile数量选择处理策略
+        # Choose strategy based on device type and tile count
         use_multithread = len(indices) > 4 and (device is None or str(device) == "cpu")
         
         if use_multithread and num_workers > 1:
-            # 多线程处理模式
+            # Multi-threaded processing
             pbar_desc = f"[{desc}]: Multi-threaded Tiled Processing" if desc else "Multi-threaded Tiled Processing"
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                # 提交所有tile处理任务
+                # Submit all tile tasks
                 futures = [executor.submit(process_single_tile, tile_info) for tile_info in indices]
                 
-                # 使用tqdm显示进度
+                # Progress bar
                 pbar = tqdm(as_completed(futures), total=len(futures), desc=pbar_desc, disable=not progress, leave=False)
                 
                 for future in pbar:
@@ -249,7 +249,7 @@ def make_tiled_fn(
                     out[..., out_hi:out_hi_end, out_wi:out_wi_end] += result
                     count[..., out_hi:out_hi_end, out_wi:out_wi_end] += weights
         else:
-            # 原始单线程处理模式
+            # Single-threaded processing
             pbar_desc = f"[{desc}]: Tiled Processing" if desc else "Tiled Processing"
             pbar = tqdm(
                 indices, desc=pbar_desc, disable=not progress, leave=False
