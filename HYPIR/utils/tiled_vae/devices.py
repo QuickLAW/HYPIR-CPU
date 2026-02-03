@@ -22,7 +22,7 @@ def get_cuda_device_string():
 
 
 def get_optimal_device_name():
-    # 检查环境变量或全局设置来确定设备
+    # Check environment overrides and global settings
     if hasattr(torch, '_hypir_device_override'):
         return torch._hypir_device_override
     
@@ -69,13 +69,13 @@ enable_tf32()
 
 cpu = torch.device("cpu")
 
-# 动态设置设备和数据类型
+# Resolve device and dtype based on runtime capability
 def _get_device_config():
     device_name = get_optimal_device_name()
     if device_name == "cpu":
         return {
             'device': torch.device("cpu"),
-            'dtype': torch.float32,  # CPU模式使用float32获得更好性能
+            'dtype': torch.float32,
             'dtype_vae': torch.float32,
             'dtype_unet': torch.float32,
             'unet_needs_upcast': False
@@ -89,7 +89,7 @@ def _get_device_config():
             'unet_needs_upcast': False
         }
 
-# 获取配置
+# Initialize device configuration
 _config = _get_device_config()
 device = device_interrogate = device_gfpgan = device_esrgan = device_codeformer = _config['device']
 dtype = _config['dtype']
@@ -171,9 +171,9 @@ def first_time_calculation():
 
 
 def set_device_override(device_name):
-    """设置设备覆盖，用于强制使用特定设备"""
+    """Override the preferred device selection."""
     torch._hypir_device_override = device_name
-    # 重新配置全局变量
+    # Reconfigure globals
     global device, device_interrogate, device_gfpgan, device_esrgan, device_codeformer
     global dtype, dtype_vae, dtype_unet, unet_needs_upcast
     
@@ -184,4 +184,4 @@ def set_device_override(device_name):
     dtype_unet = _config['dtype_unet']
     unet_needs_upcast = _config['unet_needs_upcast']
     
-    print(f"设备已设置为: {device}, 数据类型: {dtype}")
+    print(f"Device override applied: {device}, dtype: {dtype}")

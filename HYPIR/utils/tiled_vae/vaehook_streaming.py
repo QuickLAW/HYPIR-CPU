@@ -1,13 +1,11 @@
 """
-流式VAE处理器 - 根本性解决内存占用问题
+Streaming VAEHook - fundamental solution to memory pressure.
 
-核心思想：
-1. 不预分配整个结果张量（避免12.9GB的巨大内存占用）
-2. 逐块处理和输出，立即释放内存
-3. 支持渐进式结果生成
-4. 内存占用从17GB降低到3-4GB
-
-作者：HYPIR优化团队
+Core ideas:
+1. Avoid full output tensor pre-allocation
+2. Process tiles and flush immediately
+3. Progressive result assembly
+4. Reduce peak memory from ~17GB to ~3-4GB
 """
 
 import torch
@@ -28,13 +26,13 @@ from .vaehook import VAEHook, crop_valid_region, GroupNormParam
 
 class StreamingVAEHook(VAEHook):
     """
-    流式VAE处理器 - 解决内存占用问题的根本方案
-    
-    主要改进：
-    1. 分块输出：不预分配整个结果张量
-    2. 流式处理：逐块处理，立即输出
-    3. 内存管理：及时释放中间结果
-    4. 渐进式生成：支持实时查看处理进度
+    Streaming VAEHook to address memory pressure.
+
+    Improvements:
+    1. Tile-wise output flushing
+    2. Streaming processing; immediate release of intermediates
+    3. Memory tracking and proactive cleanup
+    4. Progressive assembly for realtime feedback
     """
     
     def __init__(self, net, tile_size, is_decoder, fast_decoder, fast_encoder, 
@@ -49,12 +47,12 @@ class StreamingVAEHook(VAEHook):
         self.current_memory_gb = 0.0
         self.memory_lock = threading.Lock()
         
-        # 创建临时目录
+        # Create a session-scoped temporary directory
         self.session_temp_dir = os.path.join(self.temp_dir, f"hypir_streaming_{int(time.time())}")
         os.makedirs(self.session_temp_dir, exist_ok=True)
         
     def __del__(self):
-        """清理临时文件"""
+        """Cleanup temporary files."""
         try:
             import shutil
             if hasattr(self, 'session_temp_dir') and os.path.exists(self.session_temp_dir):
@@ -63,7 +61,7 @@ class StreamingVAEHook(VAEHook):
             pass
     
     def _get_memory_usage_gb(self) -> float:
-        """获取当前内存使用量（GB）"""
+        """Get current memory usage in GB."""
         if torch.cuda.is_available():
             return torch.cuda.memory_allocated() / (1024**3)
         else:
@@ -72,23 +70,23 @@ class StreamingVAEHook(VAEHook):
             return process.memory_info().rss / (1024**3)
     
     def _update_memory_tracking(self, delta_gb: float):
-        """更新内存跟踪"""
+        """Update memory tracking counter."""
         with self.memory_lock:
             self.current_memory_gb += delta_gb
     
     def _should_use_streaming(self, output_height: int, output_width: int, channels: int) -> bool:
-        """判断是否应该使用流式处理"""
+        """Decide whether streaming mode should be used."""
         if not self.streaming_mode:
             return False
             
-        # 计算预期的结果张量大小
+        # Estimate output tensor size
         expected_size_gb = (output_height * output_width * channels * 4) / (1024**3)
         
-        # 如果结果张量超过2GB，强制使用流式处理
+        # Enforce streaming when output exceeds 2GB
         if expected_size_gb > 2.0:
             return True
             
-        # 如果当前内存使用量 + 预期大小超过限制，使用流式处理
+        # Use streaming when current + expected exceeds budget
         current_memory = self._get_memory_usage_gb()
         if current_memory + expected_size_gb > self.max_memory_gb:
             return True
@@ -96,11 +94,11 @@ class StreamingVAEHook(VAEHook):
         return False
     
     def _save_tile_result(self, tile_result: torch.Tensor, tile_idx: int, 
-                         output_bbox: Tuple[int, int, int, int]) -> str:
-        """保存单个tile的结果到临时文件"""
+                        output_bbox: Tuple[int, int, int, int]) -> str:
+        """Persist a single tile result to a temporary file."""
         temp_file = os.path.join(self.session_temp_dir, f"tile_{tile_idx}.pt")
         
-        # 保存tile结果和其位置信息
+        # Save tile and metadata
         tile_data = {
             'result': tile_result.cpu(),
             'bbox': output_bbox,
@@ -111,117 +109,111 @@ class StreamingVAEHook(VAEHook):
         return temp_file
     
     def _load_tile_result(self, temp_file: str) -> Tuple[torch.Tensor, Tuple[int, int, int, int]]:
-        """从临时文件加载tile结果"""
+        """Load a tile result from a temporary file."""
         tile_data = torch.load(temp_file, map_location='cpu')
         return tile_data['result'], tile_data['bbox']
     
     def _assemble_streaming_result(self, tile_files: List[str], 
-                                 output_shape: Tuple[int, int, int, int],
-                                 device: torch.device) -> torch.Tensor:
-        """从流式处理的tile文件组装最终结果"""
-        print(f"🔄 组装流式处理结果，共{len(tile_files)}个tile...")
+                                output_shape: Tuple[int, int, int, int],
+                                device: torch.device) -> torch.Tensor:
+        """Assemble final output from tile files."""
+        print(f"[Streaming VAE]: Assembling {len(tile_files)} tiles...")
         
-        # 分批加载和组装，避免内存峰值
-        batch_size = min(4, len(tile_files))  # 每次最多处理4个tile
+        # Batched load and assemble to avoid memory spikes
+        batch_size = min(4, len(tile_files))
         result = None
         
         for i in range(0, len(tile_files), batch_size):
             batch_files = tile_files[i:i+batch_size]
             
-            # 如果这是第一批，创建结果张量
+            # Create the output tensor from sample metadata
             if result is None:
-                # 先加载一个tile来确定通道数
                 sample_result, _ = self._load_tile_result(batch_files[0])
                 channels = sample_result.shape[1]
                 result = torch.zeros((output_shape[0], channels, output_shape[2], output_shape[3]), 
                                    device=device, dtype=sample_result.dtype)
-                print(f"📊 创建结果张量: {result.shape}, 内存占用: {result.numel() * 4 / (1024**3):.2f}GB")
+                print(f"[Streaming VAE]: Output tensor: {result.shape}, memory: {result.numel() * 4 / (1024**3):.2f}GB")
             
-            # 处理当前批次
+            # Assemble current batch
             for file_path in batch_files:
                 tile_result, bbox = self._load_tile_result(file_path)
                 tile_result = tile_result.to(device)
                 
-                # 将tile结果复制到最终结果中
+                # Copy tile into the output tensor
                 x1, x2, y1, y2 = bbox
                 result[:, :, y1:y2, x1:x2] = tile_result
                 
-                # 立即释放tile内存
+                # Release tile memory
                 del tile_result
                 
-                # 删除临时文件
+                # Remove temporary file
                 try:
                     os.remove(file_path)
                 except:
                     pass
             
-            # 强制垃圾回收
+            # Force garbage collection
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         
-        print(f"✅ 流式处理结果组装完成")
+        print(f"[Streaming VAE]: Assembly complete")
         return result
     
     @torch.no_grad()
     def vae_tile_forward_streaming(self, z):
         """
-        流式VAE前向传播 - 核心内存优化方法
-        
-        关键改进：
-        1. 不预分配整个结果张量
-        2. 逐个处理tile，立即保存到磁盘
-        3. 最后分批组装结果，控制内存峰值
+        Streaming forward pass with memory optimization.
         """
         device = z.device
         dtype = z.dtype
         N, C, H, W = z.shape
         
-        # 计算输出尺寸
+        # Compute output shape
         if self.is_decoder:
             output_height, output_width = H * 8, W * 8
         else:
             output_height, output_width = H // 8, W // 8
         
-        # 判断是否使用流式处理
+        # Decide whether to use streaming
         use_streaming = self._should_use_streaming(output_height, output_width, C)
         
         if not use_streaming:
-            print("📝 使用标准处理模式（内存占用较小）")
+            print("[Streaming VAE]: Using standard mode (low memory footprint)")
             return super().vae_tile_forward(z)
         
-        print(f"🌊 使用流式处理模式 - 输入: {H}x{W}, 输出: {output_height}x{output_width}")
-        print(f"💾 预期节省内存: {(output_height * output_width * C * 4) / (1024**3):.2f}GB")
+        print(f"[Streaming VAE]: Streaming mode - input: {H}x{W}, output: {output_height}x{output_width}")
+        print(f"[Streaming VAE]: Expected memory saved: {(output_height * output_width * C * 4) / (1024**3):.2f}GB")
         
-        # 分割tiles
+        # Split into tiles
         tiles, tile_weights, in_bboxes, out_bboxes = self.split_tiles(H, W)
         num_tiles = len(tiles)
         
-        print(f"🔢 分割为{num_tiles}个tiles进行流式处理")
+        print(f"[Streaming VAE]: Split into {num_tiles} tiles")
         
-        # 构建任务队列
+        # Build task queues
         task_queue = self.build_task_queue(self.net, self.is_decoder)
         task_queues = [self.clone_task_queue(task_queue) for _ in range(num_tiles)]
         
-        # 估算group norm参数
+        # Estimate GroupNorm parameters
         group_norm_param = GroupNormParam()
         if self.color_fix > 0:
             group_norm_param = self.estimate_group_norm(z, task_queue, self.color_fix)
         
-        # 流式处理每个tile
+        # Process tiles in streaming mode
         tile_files = []
         processed_tiles = 0
         
         from tqdm import tqdm
-        pbar = tqdm(total=num_tiles, desc="🌊 流式处理tiles")
+        pbar = tqdm(total=num_tiles, desc="[Streaming VAE]: Tiles")
         
         try:
             for i in range(num_tiles):
-                # 处理当前tile
+                # Process current tile
                 tile = tiles[i].to(device, dtype=dtype)
                 current_task_queue = task_queues[i]
                 
-                # 执行tile处理
+                # Execute tile tasks
                 while len(current_task_queue) > 0:
                     task = current_task_queue.pop(0)
                     if task[0] == 'store_res':
@@ -233,16 +225,16 @@ class StreamingVAEHook(VAEHook):
                     else:
                         tile = task[1](tile)
                 
-                # 裁剪有效区域
+                # Crop valid region
                 tile_result = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], self.is_decoder)
                 
-                # 保存tile结果到临时文件
+                # Save tile result
                 temp_file = self._save_tile_result(tile_result, i, out_bboxes[i])
                 tile_files.append(temp_file)
                 
-                # 立即释放内存
+                # Release memory
                 del tile, tile_result
-                tiles[i] = None  # 释放原始tile
+                tiles[i] = None
                 
                 processed_tiles += 1
                 pbar.update(1)
@@ -251,7 +243,7 @@ class StreamingVAEHook(VAEHook):
                     'memory': f"{self._get_memory_usage_gb():.1f}GB"
                 })
                 
-                # 定期垃圾回收
+                # Periodic garbage collection
                 if processed_tiles % 4 == 0:
                     gc.collect()
                     if torch.cuda.is_available():
@@ -260,16 +252,16 @@ class StreamingVAEHook(VAEHook):
         finally:
             pbar.close()
         
-        # 组装最终结果
-        print(f"🔧 开始组装最终结果...")
+        # Assemble final output
+        print("[Streaming VAE]: Assembling final output...")
         output_shape = (N, C, output_height, output_width)
         result = self._assemble_streaming_result(tile_files, output_shape, device)
         
-        print(f"✅ 流式处理完成，最终内存占用: {self._get_memory_usage_gb():.2f}GB")
+        print(f"[Streaming VAE]: Completed. Final memory usage: {self._get_memory_usage_gb():.2f}GB")
         return result
     
     def __call__(self, x):
-        """重写调用方法，使用流式处理"""
+        """Override call to enable streaming mode."""
         if self.streaming_mode:
             return self.vae_tile_forward_streaming(x)
         else:
@@ -278,13 +270,13 @@ class StreamingVAEHook(VAEHook):
 
 class ProgressiveVAEHook(StreamingVAEHook):
     """
-    渐进式VAE处理器 - 支持实时查看处理进度
-    
-    特性：
-    1. 实时生成中间结果
-    2. 支持进度回调
-    3. 可以提前停止处理
-    4. 适合交互式应用
+    Progressive VAEHook with realtime progress updates.
+
+    Features:
+    1. Emits intermediate results
+    2. Progress callback support
+    3. Early stop
+    4. Suited for interactive use
     """
     
     def __init__(self, *args, progress_callback=None, **kwargs):
@@ -293,11 +285,11 @@ class ProgressiveVAEHook(StreamingVAEHook):
         self.should_stop = False
     
     def stop_processing(self):
-        """停止处理"""
+        """Request early stop."""
         self.should_stop = True
     
     def _notify_progress(self, processed: int, total: int, intermediate_result=None):
-        """通知处理进度"""
+        """Notify progress updates."""
         if self.progress_callback:
             progress_info = {
                 'processed': processed,
@@ -310,46 +302,46 @@ class ProgressiveVAEHook(StreamingVAEHook):
     
     @torch.no_grad()
     def vae_tile_forward_streaming(self, z):
-        """渐进式流式处理"""
-        # 如果有进度回调，启用渐进式处理
+        """Progressive streaming forward pass."""
+        # Enable progressive mode when a callback is provided
         if self.progress_callback:
             return self._progressive_processing(z)
         else:
             return super().vae_tile_forward_streaming(z)
     
     def _progressive_processing(self, z):
-        """渐进式处理实现"""
+        """Progressive processing implementation."""
         device = z.device
         dtype = z.dtype
         N, C, H, W = z.shape
         
-        # 计算输出尺寸
+        # Compute output shape
         if self.is_decoder:
             output_height, output_width = H * 8, W * 8
         else:
             output_height, output_width = H // 8, W // 8
         
-        # 分割tiles
+        # Split into tiles
         tiles, tile_weights, in_bboxes, out_bboxes = self.split_tiles(H, W)
         num_tiles = len(tiles)
         
-        # 创建结果张量（渐进式需要实时更新）
+        # Output tensor for progressive updates
         result = torch.zeros((N, C, output_height, output_width), device=device, dtype=dtype)
         
-        # 构建任务队列
+        # Build task queues
         task_queue = self.build_task_queue(self.net, self.is_decoder)
         task_queues = [self.clone_task_queue(task_queue) for _ in range(num_tiles)]
         
-        # 渐进式处理
+        # Progressive processing
         for i in range(num_tiles):
             if self.should_stop:
                 break
                 
-            # 处理当前tile
+            # Process current tile
             tile = tiles[i].to(device, dtype=dtype)
             current_task_queue = task_queues[i]
             
-            # 执行tile处理
+            # Execute tile tasks
             while len(current_task_queue) > 0:
                 task = current_task_queue.pop(0)
                 if task[0] == 'store_res':
@@ -361,15 +353,15 @@ class ProgressiveVAEHook(StreamingVAEHook):
                 else:
                     tile = task[1](tile)
             
-            # 裁剪有效区域并更新结果
+            # Crop valid region and update output
             tile_result = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], self.is_decoder)
             x1, x2, y1, y2 = out_bboxes[i]
             result[:, :, y1:y2, x1:x2] = tile_result
             
-            # 通知进度（传递当前的中间结果）
+            # Emit progress update with intermediate result
             self._notify_progress(i + 1, num_tiles, result.clone())
             
-            # 清理内存
+            # Release memory
             del tile, tile_result
             tiles[i] = None
         
@@ -381,13 +373,7 @@ def create_streaming_vae_hook(net, tile_size, is_decoder, fast_decoder=True,
                             dtype=None, streaming_mode=True, max_memory_gb=4.0,
                             progressive=False, progress_callback=None):
     """
-    创建流式VAE处理器的工厂函数
-    
-    Args:
-        streaming_mode: 是否启用流式处理
-        max_memory_gb: 最大内存限制（GB）
-        progressive: 是否启用渐进式处理
-        progress_callback: 进度回调函数
+    Factory for streaming VAEHook.
     """
     if progressive:
         return ProgressiveVAEHook(

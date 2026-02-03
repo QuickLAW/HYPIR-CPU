@@ -1,4 +1,4 @@
-# CPU优化版本的VAEHook - 专门针对第三阶段性能优化
+# CPU-optimized VAEHook for stage-3 tiled VAE performance
 import torch
 import torch.nn.functional as F
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,35 +12,35 @@ from .vaehook import VAEHook, GroupNormParam, build_task_queue, clone_task_queue
 
 class OptimizedVAEHook(VAEHook):
     """
-    CPU优化版本的VAEHook，专门针对第三阶段Tiled VAE解码器性能优化
-    
-    主要优化：
-    1. CPU模式下的多线程并行处理
-    2. 减少不必要的设备传输
-    3. 优化内存使用模式
-    4. 改进任务调度策略
+    CPU-optimized VAEHook for stage-3 tiled VAE decoding.
+
+    Optimizations:
+    1. Parallel tile processing on CPU
+    2. Reduced device transfers
+    3. Improved memory access patterns
+    4. Task scheduling improvements
     """
     
     def __init__(self, net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu=False, dtype=None):
         super().__init__(net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu, dtype)
         
-        # CPU优化参数
-        self.cpu_workers = min(8, mp.cpu_count())  # 限制最大线程数
+        # CPU tuning
+        self.cpu_workers = min(8, mp.cpu_count())
         self.device_type = str(next(net.parameters()).device)
         self.is_cpu_mode = self.device_type == "cpu"
         
-        # 线程安全锁
+        # Thread-safety locks
         self.norm_lock = Lock()
         self.result_lock = Lock()
         
     def process_tile_cpu_optimized(self, tile_data):
         """
-        CPU优化的单tile处理函数
+        CPU-optimized single-tile processing.
         """
         tile_idx, tile, input_bbox, task_queue = tile_data
         device = next(self.net.parameters()).device
         
-        # CPU模式下避免不必要的设备传输
+        # Avoid unnecessary transfers in CPU mode
         if self.is_cpu_mode:
             working_tile = tile
         else:
@@ -48,12 +48,12 @@ class OptimizedVAEHook(VAEHook):
         
         group_norm_params = []
         
-        # 执行任务队列
+        # Execute the task queue
         while len(task_queue) > 0:
             task = task_queue.pop(0)
             
             if task[0] == 'pre_norm':
-                # 收集GroupNorm参数，稍后统一处理
+                # Collect GroupNorm params for a later pass
                 group_norm_params.append((working_tile.clone(), task[1]))
                 break
             elif task[0] == 'store_res' or task[0] == 'store_res_cpu':
@@ -79,7 +79,7 @@ class OptimizedVAEHook(VAEHook):
     @torch.no_grad()
     def vae_tile_forward_optimized(self, z):
         """
-        优化版本的VAE tile forward，专门针对CPU性能优化
+        Optimized VAE tile forward pass for CPU performance.
         """
         device = next(self.net.parameters()).device
         net = self.net
@@ -95,7 +95,7 @@ class OptimizedVAEHook(VAEHook):
 
         in_bboxes, out_bboxes = self.split_tiles(height, width)
 
-        # 准备tiles
+        # Prepare tiles
         tiles = []
         for input_bbox in in_bboxes:
             tile = z[:, :, input_bbox[2]:input_bbox[3], input_bbox[0]:input_bbox[1]]
@@ -105,18 +105,18 @@ class OptimizedVAEHook(VAEHook):
 
         num_tiles = len(tiles)
         
-        # 构建任务队列
+        # Build task queue
         single_task_queue = build_task_queue(net, is_decoder)
         
-        # Fast mode处理
+        # Fast mode
         if self.fast_mode:
             scale_factor = tile_size / max(height, width)
             z_device = z.to(device) if not self.is_cpu_mode else z
             downsampled_z = F.interpolate(z_device, scale_factor=scale_factor, mode='nearest-exact')
             
-            print(f'[Optimized Tiled VAE]: Fast mode enabled, estimating group norm parameters on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
+            print(f'[Optimized Tiled VAE]: Fast mode enabled, estimating GroupNorm params on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
             
-            # 分布修正
+            # Distribution correction
             std_old, mean_old = torch.std_mean(z_device, dim=[0, 2, 3], keepdim=True)
             std_new, mean_new = torch.std_mean(downsampled_z, dim=[0, 2, 3], keepdim=True)
             downsampled_z = (downsampled_z - mean_new) / std_new * std_old + mean_old
@@ -131,10 +131,10 @@ class OptimizedVAEHook(VAEHook):
         task_queues = [clone_task_queue(single_task_queue) for _ in range(num_tiles)]
         del z
 
-        # 初始化结果tensor
+        # Initialize output tensor
         result = None
         
-        # CPU并行处理优化
+        # CPU parallel processing when beneficial
         if self.is_cpu_mode and num_tiles > 1 and self.cpu_workers > 1:
             result = self._parallel_cpu_processing(tiles, in_bboxes, out_bboxes, task_queues, N, height, width, device)
         else:
@@ -144,23 +144,23 @@ class OptimizedVAEHook(VAEHook):
     
     def _parallel_cpu_processing(self, tiles, in_bboxes, out_bboxes, task_queues, N, height, width, device):
         """
-        CPU并行处理模式
+        Parallel CPU processing mode.
         """
         num_tiles = len(tiles)
         is_decoder = self.is_decoder
         
-        # 初始化结果tensor
+        # Initialize output tensor
         result = torch.zeros(
             (N, tiles[0].shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), 
             device=device, 
             requires_grad=False
         )
         
-        # 准备并行处理数据
+        # Prepare parallel work items
         tile_data_list = [(i, tiles[i], in_bboxes[i], task_queues[i]) for i in range(num_tiles)]
         
-        # 多轮处理，直到所有任务完成
-        max_iterations = 10  # 防止无限循环
+        # Multiple passes until all tasks complete
+        max_iterations = 10
         iteration = 0
         
         pbar = tqdm(total=num_tiles * len(task_queues[0]), desc="[Optimized Tiled VAE]: Parallel CPU Processing")
@@ -168,7 +168,7 @@ class OptimizedVAEHook(VAEHook):
         while tile_data_list and iteration < max_iterations:
             iteration += 1
             
-            # 并行处理当前轮次的tiles
+            # Process current batch of tiles in parallel
             with ThreadPoolExecutor(max_workers=self.cpu_workers) as executor:
                 futures = [executor.submit(self.process_tile_cpu_optimized, tile_data) for tile_data in tile_data_list]
                 
@@ -179,29 +179,29 @@ class OptimizedVAEHook(VAEHook):
                 for future in as_completed(futures):
                     tile_idx, processed_tile, input_bbox, remaining_queue, group_norm_params = future.result()
                     
-                    # 更新进度
+                    # Update progress
                     original_queue_len = len(task_queues[tile_idx])
                     completed_tasks = original_queue_len - len(remaining_queue)
                     pbar.update(completed_tasks)
                     
                     if len(remaining_queue) == 0:
-                        # tile处理完成
+                        # Tile finished
                         completed_tiles.append((tile_idx, processed_tile, input_bbox))
                     else:
-                        # tile还有剩余任务
+                        # Tile has remaining tasks
                         remaining_tiles.append((tile_idx, processed_tile, input_bbox, remaining_queue))
                     
-                    # 收集GroupNorm参数
+                    # Collect GroupNorm params
                     all_group_norm_params.extend(group_norm_params)
             
-            # 处理完成的tiles
+            # Write completed tiles to output
             for tile_idx, processed_tile, input_bbox in completed_tiles:
                 out_bbox = out_bboxes[tile_idx]
                 result[:, :, out_bbox[2]:out_bbox[3], out_bbox[0]:out_bbox[1]] = crop_valid_region(
                     processed_tile, input_bbox, out_bbox, is_decoder
                 )
             
-            # 处理GroupNorm参数（如果有的话）
+            # Apply GroupNorm parameters if collected
             if all_group_norm_params:
                 group_norm_param = GroupNormParam()
                 for tile, layer in all_group_norm_params:
@@ -209,14 +209,14 @@ class OptimizedVAEHook(VAEHook):
                 
                 group_norm_func = group_norm_param.summary()
                 if group_norm_func is not None:
-                    # 为剩余的task queues添加group norm任务
+                    # Inject GroupNorm task for remaining queues
                     for tile_idx, processed_tile, input_bbox, remaining_queue in remaining_tiles:
                         remaining_queue.insert(0, ('apply_norm', group_norm_func))
             
-            # 更新下一轮处理的数据
+            # Prepare next iteration
             tile_data_list = remaining_tiles
             
-            # 清理内存
+            # Reclaim memory
             gc.collect()
         
         pbar.close()
@@ -224,21 +224,21 @@ class OptimizedVAEHook(VAEHook):
     
     def _sequential_processing(self, tiles, in_bboxes, out_bboxes, task_queues, N, height, width, device):
         """
-        传统串行处理模式（作为fallback）
+        Sequential processing fallback.
         """
-        # 使用原始的串行处理逻辑，但进行一些CPU优化
+        # Reuse base implementation
         return super().vae_tile_forward(torch.cat(tiles, dim=0).reshape(N, -1, height, width))
 
 
-# 工厂函数，根据设备类型选择合适的VAEHook
+# Factory: choose VAEHook based on device type
 def create_optimized_vae_hook(net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu=False, dtype=None):
     """
-    根据设备类型创建优化的VAEHook
+    Create a VAEHook optimized for the current device.
     """
     device_type = str(next(net.parameters()).device)
     
     if device_type == "cpu":
         return OptimizedVAEHook(net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu, dtype)
     else:
-        # GPU模式使用原始实现
+        # GPU uses the base implementation
         return VAEHook(net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu, dtype)

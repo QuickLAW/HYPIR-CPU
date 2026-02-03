@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from HYPIR.utils.tiled_vae.vaehook import VAEHook
 
-# 尝试导入优化版本，如果失败则使用原版本
+# Try optimized hook; fall back to the base version if unavailable
 try:
     from HYPIR.utils.tiled_vae.vaehook_optimized import create_optimized_vae_hook
     OPTIMIZED_AVAILABLE = True
@@ -23,7 +23,7 @@ def enable_tiled_vae(
     max_memory_gb: float = 4.0,
     progressive: bool = False,
     progress_callback=None,
-    dtype=None  # 添加dtype参数以保持向后兼容性
+    dtype=None
 ):
     """
     Enable tiled VAE processing with multiple optimization levels
@@ -47,7 +47,7 @@ def enable_tiled_vae(
     Returns:
         Context manager for the optimized VAE hook
     """
-    # 为了向后兼容，直接调用legacy版本
+    # Preserve backward compatibility
     return enable_tiled_vae_legacy(
         vae=vae,
         is_decoder=is_decoder,
@@ -64,8 +64,8 @@ def enable_tiled_vae_legacy(
     is_decoder,
     tile_size=256,
     dtype=None,
-    use_optimization=True,  # 新增参数，控制是否使用优化版本
-    use_memory_optimization=True,  # 新增参数，控制是否使用内存优化版本
+    use_optimization=True,
+    use_memory_optimization=True,
 ):
     """
     Legacy context manager version for backward compatibility
@@ -73,40 +73,40 @@ def enable_tiled_vae_legacy(
     if not is_decoder:
         original_forward = vae.encoder.forward
         
-        # 确定设备类型
+        # Resolve device type
         device_type = str(vae.device).split(':')[0] if hasattr(vae, 'device') else 'cpu'
         
-        # 优先使用内存优化版本（针对CPU且明确要求时）
+        # Prefer memory-optimized hook when explicitly enabled on CPU
         if use_memory_optimization and device_type == 'cpu':
             try:
                 from .vaehook_memory_optimized import MemoryOptimizedVAEHook
-                print("🧠 Using Memory-Optimized VAEHook for enhanced memory efficiency")
+                print("Using Memory-Optimized VAEHook for enhanced memory efficiency")
                 hook = MemoryOptimizedVAEHook(
                     vae.encoder, tile_size, is_decoder=False, 
                     fast_decoder=False, fast_encoder=True, 
                     color_fix=False, to_gpu=False, dtype=dtype
                 )
             except ImportError:
-                print("⚠️ Memory-optimized VAEHook not available, falling back to optimized version")
+                print("Memory-optimized VAEHook not available; falling back to optimized version")
                 use_memory_optimization = False
         
-        # 如果内存优化版本不可用，尝试性能优化版本（针对CPU）
+        # If memory-optimized hook is unavailable, try the CPU-optimized hook
         if not use_memory_optimization and use_optimization and device_type == 'cpu':
             try:
                 from .vaehook_optimized import OptimizedVAEHook
-                print("⚡ Using Optimized VAEHook for enhanced CPU performance")
+                print("Using Optimized VAEHook for enhanced CPU performance")
                 hook = OptimizedVAEHook(
                     vae.encoder, tile_size, is_decoder=False, 
                     fast_decoder=False, fast_encoder=True, 
                     color_fix=False, to_gpu=False, dtype=dtype
                 )
             except ImportError:
-                print("⚠️ Optimized VAEHook not available, using standard version")
+                print("Optimized VAEHook not available; using standard version")
                 use_optimization = False
         
-        # 如果优化版本都不可用，使用标准版本
+        # Fall back to the standard hook
         if not use_memory_optimization and not use_optimization:
-            print("📝 Using Standard VAEHook")
+            print("Using Standard VAEHook")
             hook = VAEHook(
                 vae.encoder, tile_size, is_decoder=False, 
                 fast_decoder=False, fast_encoder=True, 
@@ -114,47 +114,50 @@ def enable_tiled_vae_legacy(
             )
         
         vae.encoder.forward = hook
+        vae.encoder.original_forward = original_forward
         try:
             yield
         finally:
             vae.encoder.forward = original_forward
+            if hasattr(vae.encoder, "original_forward"):
+                delattr(vae.encoder, "original_forward")
     else:
         original_forward = vae.decoder.forward
         
-        # 确定设备类型
+        # Resolve device type
         device_type = str(vae.device).split(':')[0] if hasattr(vae, 'device') else 'cpu'
         
-        # 优先使用内存优化版本（针对CPU且明确要求时）
+        # Prefer memory-optimized hook when explicitly enabled on CPU
         if use_memory_optimization and device_type == 'cpu':
             try:
                 from .vaehook_memory_optimized import MemoryOptimizedVAEHook
-                print("🧠 Using Memory-Optimized VAEHook for enhanced memory efficiency")
+                print("Using Memory-Optimized VAEHook for enhanced memory efficiency")
                 hook = MemoryOptimizedVAEHook(
                     vae.decoder, tile_size, is_decoder=True, 
                     fast_decoder=True, fast_encoder=False, 
                     color_fix=False, to_gpu=False, dtype=dtype
                 )
             except ImportError:
-                print("⚠️ Memory-optimized VAEHook not available, falling back to optimized version")
+                print("Memory-optimized VAEHook not available; falling back to optimized version")
                 use_memory_optimization = False
         
-        # 如果内存优化版本不可用，尝试性能优化版本（针对CPU）
+        # If memory-optimized hook is unavailable, try the CPU-optimized hook
         if not use_memory_optimization and use_optimization and device_type == 'cpu':
             try:
                 from .vaehook_optimized import OptimizedVAEHook
-                print("⚡ Using Optimized VAEHook for enhanced CPU performance")
+                print("Using Optimized VAEHook for enhanced CPU performance")
                 hook = OptimizedVAEHook(
                     vae.decoder, tile_size, is_decoder=True, 
                     fast_decoder=True, fast_encoder=False, 
                     color_fix=False, to_gpu=False, dtype=dtype
                 )
             except ImportError:
-                print("⚠️ Optimized VAEHook not available, using standard version")
+                print("Optimized VAEHook not available; using standard version")
                 use_optimization = False
         
-        # 如果优化版本都不可用，使用标准版本
+        # Fall back to the standard hook
         if not use_memory_optimization and not use_optimization:
-            print("📝 Using Standard VAEHook")
+            print("Using Standard VAEHook")
             hook = VAEHook(
                 vae.decoder, tile_size, is_decoder=True, 
                 fast_decoder=True, fast_encoder=False, 
@@ -162,7 +165,10 @@ def enable_tiled_vae_legacy(
             )
         
         vae.decoder.forward = hook
+        vae.decoder.original_forward = original_forward
         try:
             yield
         finally:
             vae.decoder.forward = original_forward
+            if hasattr(vae.decoder, "original_forward"):
+                delattr(vae.decoder, "original_forward")
