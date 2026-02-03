@@ -29,7 +29,15 @@ class BaseEnhancer:
         self.model_t = model_t
         self.coeff_t = coeff_t
 
-        self.weight_dtype = torch.bfloat16
+        # 处理设备参数（可能是字符串或torch.device对象）
+        if isinstance(device, str):
+            device = torch.device(device)
+        
+        # 根据设备类型选择合适的数据类型
+        if device.type == "cpu":
+            self.weight_dtype = torch.float32  # CPU模式使用float32获得更好性能
+        else:
+            self.weight_dtype = torch.bfloat16
         self.device = device
 
     def init_models(self):
@@ -68,37 +76,14 @@ class BaseEnhancer:
         self,
         lq: torch.Tensor,
         prompt: str,
-        scale_by: Literal["factor", "longest_side"] = "factor",
         upscale: int = 1,
-        target_longest_side: int | None = None,
-        patch_size: int = 512,
-        stride: int = 256,
         return_type: Literal["pt", "np", "pil"] = "pt",
     ) -> torch.Tensor | np.ndarray | List[Image.Image]:
-        if stride <= 0:
-            raise ValueError("Stride must be greater than 0.")
-        if patch_size <= 0:
-            raise ValueError("Patch size must be greater than 0.")
-        if patch_size < stride:
-            raise ValueError("Patch size must be greater than or equal to stride.")
+        patch_size = 1024  # 从512增大到1024，减少tile数量提高性能
 
         # Prepare low-quality inputs
         bs = len(lq)
-        if scale_by == "factor":
-            lq = F.interpolate(lq, scale_factor=upscale, mode="bicubic")
-        elif scale_by == "longest_side":
-            if target_longest_side is None:
-                raise ValueError("target_longest_side must be specified when scale_by is 'longest_side'.")
-            h, w = lq.shape[2:]
-            if h >= w:
-                new_h = target_longest_side
-                new_w = int(w * (target_longest_side / h))
-            else:
-                new_w = target_longest_side
-                new_h = int(h * (target_longest_side / w))
-            lq = F.interpolate(lq, size=(new_h, new_w), mode="bicubic")
-        else:
-            raise ValueError(f"Unsupported scale_by method: {scale_by}")
+        lq = F.interpolate(lq, scale_factor=upscale, mode="bicubic")
         ref = lq
         h0, w0 = lq.shape[2:]
         if min(h0, w0) <= patch_size:
@@ -113,40 +98,30 @@ class BaseEnhancer:
         ph = (h1 + vae_scale_factor - 1) // vae_scale_factor * vae_scale_factor - h1
         pw = (w1 + vae_scale_factor - 1) // vae_scale_factor * vae_scale_factor - w1
         lq = F.pad(lq, (0, pw, 0, ph), mode="constant", value=0)
-        # Encode
-        z_lq = make_tiled_fn(
-            fn=lambda lq_tile: self.vae.encode(lq_tile).latent_dist.sample(),
-            size=patch_size,
-            stride=stride,
-            scale_type="down",
-            scale=vae_scale_factor,
-            progress=True,
-            channel=self.vae.config.latent_channels,
-            desc="VAE encoding",
-        )(lq.to(self.weight_dtype))
+        with enable_tiled_vae(
+            self.vae,
+            is_decoder=False,
+            tile_size=patch_size,
+            dtype=self.weight_dtype,
+        ):
+            z_lq = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample()
 
         # Generator forward
         self.prepare_inputs(batch_size=bs, prompt=prompt)
         z = make_tiled_fn(
             fn=lambda z_lq_tile: self.forward_generator(z_lq_tile),
             size=patch_size // vae_scale_factor,
-            stride=stride // vae_scale_factor,
+            stride=patch_size // 2 // vae_scale_factor,
             progress=True,
             desc="Generator Forward",
-        )(z_lq.to(self.weight_dtype))
-        
-        # Decode
-        x = make_tiled_fn(
-            fn=lambda lq_tile: self.vae.decode(lq_tile).sample.float(),
-            size=patch_size//vae_scale_factor,
-            stride=stride//vae_scale_factor,
-            scale_type="up",
-            scale=vae_scale_factor,
-            progress=True,
-            channel=3,
-            desc="VAE decoding",
-        )(z.to(self.weight_dtype))
-        
+        )(z_lq)
+        with enable_tiled_vae(
+            self.vae,
+            is_decoder=True,
+            tile_size=patch_size // vae_scale_factor,
+            dtype=self.weight_dtype,
+        ):
+            x = self.vae.decode(z.to(self.weight_dtype)).sample.float()
         x = x[..., :h1, :w1]
         x = (x + 1) / 2
         x = F.interpolate(input=x, size=(h0, w0), mode="bicubic", antialias=True)
